@@ -834,6 +834,7 @@ func (c *Container) checkBlockDeviceSupport(ctx context.Context) bool {
 // create creates and starts a container inside a Sandbox. It has to be
 // called only when a new container, not known by the sandbox, has to be created.
 func (c *Container) create(ctx context.Context) (err error) {
+
 	// In case the container creation fails, the following takes care
 	// of rolling back all the actions previously performed.
 	defer func() {
@@ -865,6 +866,7 @@ func (c *Container) create(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+
 	c.process = *process
 
 	if err = c.setContainerState(types.StateReady); err != nil {
@@ -894,11 +896,16 @@ func (c *Container) delete(ctx context.Context) error {
 // for and is only used to make the returned error as descriptive as
 // possible.
 func (c *Container) checkSandboxRunning(cmd string) error {
+	logF := logrus.Fields{
+		"src":  "uruncio",
+		"file": "vc/container.go/checkSandboxRunning",
+	}
 	if cmd == "" {
 		return fmt.Errorf("Cmd cannot be empty")
 	}
 
 	if c.sandbox.state.State != types.StateRunning {
+		c.Logger().WithFields(logF).Error("container create failed")
 		return fmt.Errorf("Sandbox not running, impossible to %s the container", cmd)
 	}
 
@@ -922,6 +929,21 @@ func (c *Container) start(ctx context.Context) error {
 	if err := c.checkSandboxRunning("start"); err != nil {
 		return err
 	}
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/container.go", "func": "start"}
+	c.Logger().WithFields(logF).WithField("containerID", c.id).Error("c.start()")
+	// If the hypervisorType is urunc, set running and return nil error
+	if c.sandbox.GetHypervisorType() == string(UruncHypervisor) {
+		c.setContainerState(types.StateRunning)
+		logrus.WithFields(logF).WithField("hypervisor", "urunc").Error("container start")
+		logrus.WithFields(logF).WithField("hypervisor", "urunc").Error("container status running")
+		execData := c.sandbox.Agent().GetExecData()
+
+		logrus.WithFields(logF).WithField("execData", execData).Error("")
+		return nil
+	}
+	logrus.WithFields(logF).Error("DIDNT RETURN")
+
+	c.Logger().WithFields(logF).WithField("hypervisorType", c.sandbox.GetHypervisorType()).Error("c.start()")
 
 	if c.state.State != types.StateReady &&
 		c.state.State != types.StateStopped {
@@ -945,6 +967,8 @@ func (c *Container) start(ctx context.Context) error {
 }
 
 func (c *Container) stop(ctx context.Context, force bool) error {
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/container.go", "func": "stop"}
+	logrus.WithFields(logF).Error("")
 	span, ctx := katatrace.Trace(ctx, c.Logger(), "stop", containerTracingTags, map[string]string{"container_id": c.id})
 	defer span.End()
 

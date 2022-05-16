@@ -26,6 +26,7 @@ import (
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/pkg/rootless"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 
 	// only register the proto type
 	crioption "github.com/containerd/containerd/pkg/runtimeoptions/v1"
@@ -48,6 +49,7 @@ var defaultStartManagementServerFunc startManagementServerFunc = func(s *service
 }
 
 func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*container, error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/create.go", "func": "create"}
 	rootFs := vc.RootFs{}
 	if len(r.Rootfs) == 1 {
 		m := r.Rootfs[0]
@@ -77,6 +79,11 @@ func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*con
 
 	switch containerType {
 	case vc.PodSandbox, vc.SingleContainer:
+		if containerType == vc.PodSandbox {
+			logrus.WithFields(logF).WithField("containerType", "PodSandbox").Error("")
+		} else {
+			logrus.WithFields(logF).WithField("containerType", "SingleContainer").Error("")
+		}
 		if s.sandbox != nil {
 			return nil, fmt.Errorf("cannot create another sandbox in sandbox: %s", s.sandbox.ID())
 		}
@@ -149,10 +156,11 @@ func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*con
 			return nil, err
 		}
 		s.sandbox = sandbox
-		pid, err := s.sandbox.GetHypervisorPid()
-		if err != nil {
-			return nil, err
-		}
+		// check that
+		pid, _ := s.sandbox.GetHypervisorPid()
+		// if err != nil {
+		// 	return nil, err
+		// }
 		s.hpid = uint32(pid)
 
 		if defaultStartManagementServerFunc != nil {
@@ -160,6 +168,8 @@ func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*con
 		}
 
 	case vc.PodContainer:
+		logrus.WithFields(logF).WithField("containerType", "PodContainer").Error("")
+
 		span, ctx := katatrace.Trace(s.ctx, shimLog, "create", shimTracingTags)
 		defer span.End()
 
@@ -189,7 +199,7 @@ func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*con
 	if err != nil {
 		return nil, err
 	}
-
+	logrus.WithFields(logF).WithField("containerId", container.id).Error("Container created")
 	return container, nil
 }
 

@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	sysexec "os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -34,6 +36,8 @@ import (
 	vc "github.com/kata-containers/kata-containers/src/runtime/virtcontainers"
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/pkg/compatoci"
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/types"
+	ps "github.com/mitchellh/go-ps"
+	psutil "github.com/shirou/gopsutil/process"
 )
 
 // shimTracingTags defines tags for the trace span
@@ -174,21 +178,28 @@ func newCommand(ctx context.Context, id, containerdBinary, containerdAddress str
 		Setpgid: true,
 	}
 
+	shimLog.WithField("src", "uruncio").WithField("cmd", "logio").Error(cmd.Path)
+
 	return cmd, nil
 }
 
 // StartShim is a binary call that starts a kata shimv2 service which will
 // implement the ShimV2 APIs such as create/start/update etc containers.
 func (s *service) StartShim(ctx context.Context, opts cdshim.StartOpts) (_ string, retErr error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "StartShim"}
+	shimLog.WithFields(logF).Error("")
 	bundlePath, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
+	shimLog.WithFields(logF).WithField("bundlePath", bundlePath).Error("")
 
 	address, err := getAddress(ctx, bundlePath, opts.Address, opts.ID)
 	if err != nil {
 		return "", err
 	}
+	shimLog.WithFields(logF).WithField("address", address).Error("")
+
 	if address != "" {
 		if err := cdshim.WriteAddress("address", address); err != nil {
 			return "", err
@@ -200,6 +211,8 @@ func (s *service) StartShim(ctx context.Context, opts cdshim.StartOpts) (_ strin
 	if err != nil {
 		return "", err
 	}
+	shimLog.WithFields(logF).WithField("ContainerdBinary", opts.ContainerdBinary).Error("")
+	shimLog.WithFields(logF).WithField("Address", opts.Address).Error("")
 
 	address, err = cdshim.SocketAddress(ctx, opts.Address, opts.ID)
 	if err != nil {
@@ -242,6 +255,8 @@ func (s *service) StartShim(ctx context.Context, opts cdshim.StartOpts) (_ strin
 			cmd.Process.Kill()
 		}
 	}()
+
+	shimLog.WithFields(logF).WithField("shim.pid", cmd.Process.Pid).Error("")
 
 	if err = cdshim.WritePidFile("shim.pid", cmd.Process.Pid); err != nil {
 		return "", err
@@ -355,6 +370,8 @@ func (s *service) Cleanup(ctx context.Context) (_ *taskAPI.DeleteResponse, err e
 
 // Create a new sandbox or container with the underlying OCI runtime
 func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "Create"}
+	shimLog.WithFields(logF).Error("service create")
 	shimLog.WithField("container", r.ID).Debug("Create() start")
 	defer shimLog.WithField("container", r.ID).Debug("Create() end")
 	start := time.Now()
@@ -414,8 +431,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (_ *taskAPI.StartResponse, err error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "Start"}
 	shimLog.WithField("container", r.ID).Debug("Start() start")
-	defer shimLog.WithField("container", r.ID).Debug("Start() end")
+	logrus.WithFields(logF).WithField("container", r.ID).Error("")
+	defer shimLog.WithFields(logF).WithField("container", r.ID).Error("Start() end")
 	span, spanCtx := katatrace.Trace(s.rootCtx, shimLog, "Start", shimTracingTags)
 	defer span.End()
 
@@ -426,19 +445,31 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (_ *taskAP
 	}()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	logrus.WithFields(logF).WithField("container", r.ID).Error("mutex locked")
+	defer func() {
+		s.mu.Unlock()
+		logrus.WithFields(logF).WithField("container", r.ID).Error("mutex unlocked")
+
+	}()
 
 	c, err := s.getContainer(r.ID)
+	logrus.WithFields(logF).WithField("container", r.ID).Error("getcontainer from Start()")
+
 	if err != nil {
 		return nil, err
 	}
 
 	// hold the send lock so that the start events are sent before any exit events in the error case
 	s.eventSendMu.Lock()
-	defer s.eventSendMu.Unlock()
+
+	defer func() {
+		s.eventSendMu.Unlock()
+		logrus.WithFields(logF).WithField("container", r.ID).Error("EventMutex unlocked")
+	}()
 
 	//start a container
 	if r.ExecID == "" {
+		logrus.WithFields(logF).WithField("container", r.ID).Error("execID empty, starting container")
 		err = startContainer(spanCtx, s, c)
 		if err != nil {
 			return nil, errdefs.ToGRPC(err)
@@ -459,6 +490,7 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (_ *taskAP
 			Pid:         s.hpid,
 		})
 	}
+	logrus.WithFields(logF).WithField("container", r.ID).Error("container started")
 
 	return &taskAPI.StartResponse{
 		Pid: s.hpid,
@@ -482,14 +514,28 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (_ *task
 	defer s.mu.Unlock()
 
 	c, err := s.getContainer(r.ID)
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "Delete"}
+	shimLog.WithFields(logF).WithField("container", r.ID).Error("getcontainer 2 (delete)")
+
 	if err != nil {
+		shimLog.WithFields(logF).Error("getcontainer_delete err")
+
 		return nil, err
 	}
 
 	if r.ExecID == "" {
+		shimLog.WithFields(logF).Error("ExecID empty")
+
 		if err = deleteContainer(spanCtx, s, c); err != nil {
+			shimLog.WithFields(logF).Error("deleteContainer err")
 			return nil, err
 		}
+
+		shimLog.WithFields(logF).WithField("ContainerID", c.id).WithField("Pid", s.hpid).Error("TaskDelete info")
+
+		currentPid := uint32(os.Getpid())
+		s.hpid = currentPid
+		shimLog.WithFields(logF).WithField("shim-Pid", s.hpid).Error("TaskDelete info")
 
 		s.send(&eventstypes.TaskDelete{
 			ContainerID: c.id,
@@ -535,6 +581,9 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (_ *p
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "Exec"}
+	shimLog.WithFields(logF).WithField("container", r.ID).Error("getcontainer 3 (Exec)")
+
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -575,6 +624,8 @@ func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (_
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "ResizePty"}
+	shimLog.WithFields(logF).WithField("container", r.ID).Error("getcontainer 4 (ResizePty)")
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -592,6 +643,8 @@ func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (_
 		processID = execs.id
 
 	}
+	shimLog.WithFields(logF).WithField("container", r.ID).Error("RESIZE")
+
 	err = s.sandbox.WinsizeProcess(spanCtx, c.id, processID, r.Height, r.Width)
 	if err != nil {
 		return nil, err
@@ -616,12 +669,17 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (_ *taskAP
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "State"}
+	logrus.WithField("container", r.ID).WithFields(logF).Error("")
+
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
 	}
 
 	if r.ExecID == "" {
+		logrus.WithField("container", r.ID).WithField("status", c.status).WithFields(logF).Error("")
+
 		return &taskAPI.StateResponse{
 			ID:         c.id,
 			Bundle:     c.bundle,
@@ -641,6 +699,7 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (_ *taskAP
 	if err != nil {
 		return nil, err
 	}
+	logrus.WithField("container", r.ID).WithField("status", execs.status).WithFields(logF).Error("")
 
 	return &taskAPI.StateResponse{
 		ID:         execs.id,
@@ -671,7 +730,8 @@ func (s *service) Pause(ctx context.Context, r *taskAPI.PauseRequest) (_ *ptypes
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "Pause"}
+	shimLog.WithField("container", r.ID).WithFields(logF).Error("getcontainer 6 (Pause)")
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -712,7 +772,8 @@ func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (_ *ptyp
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "Resume"}
+	shimLog.WithField("container", r.ID).WithFields(logF).Error("getcontainer 7 (Resume)")
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -738,6 +799,45 @@ func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (_ *ptyp
 
 // Kill a process with the provided signal
 func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (_ *ptypes.Empty, err error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "service.Kill"}
+	logrus.WithFields(logF).Error("")
+	processes, err := ps.Processes()
+	if err != nil {
+		logrus.WithFields(logF).Error("processes failed")
+	}
+
+	for _, process := range processes {
+		if strings.Contains(process.Executable(), "unikata") {
+			logrus.WithFields(logF).WithField("proc", process.Executable()).Error("")
+		}
+	}
+
+	tempid := os.Getpid()
+	strPid := strconv.Itoa(tempid)
+
+	logrus.WithFields(logF).Error(strPid)
+
+	output, err := sysexec.Command("ps", "-ef").CombinedOutput()
+	if err != nil {
+		logrus.WithFields(logF).Error("ps failed")
+	}
+
+	outputLines := strings.Split(string(output), "\n")
+	for _, l := range outputLines {
+		if strings.Contains(l, "unikata") {
+			logrus.WithFields(logF).Error(l)
+		}
+	}
+	newP, _ := psutil.NewProcess(int32(tempid))
+
+	childProcesses, _ := newP.Children()
+	for _, child := range childProcesses {
+		name, _ := child.Name()
+		logrus.WithFields(logF).WithField("killing", name)
+		child.Kill()
+	}
+	logrus.WithFields(logF).Error(newP)
+
 	shimLog.WithField("container", r.ID).Debug("Kill() start")
 	defer shimLog.WithField("container", r.ID).Debug("Kill() end")
 	span, spanCtx := katatrace.Trace(s.rootCtx, shimLog, "Kill", shimTracingTags)
@@ -753,14 +853,18 @@ func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (_ *ptypes.E
 	defer s.mu.Unlock()
 
 	signum := syscall.Signal(r.Signal)
+	shimLog.WithField("container", r.ID).WithFields(logF).Error("getcontainer 8 (Kill)")
 
 	c, err := s.getContainer(r.ID)
 	if err != nil {
+		logrus.WithFields(logF).Error("get container " + r.ID + " failed")
 		return nil, err
 	}
 
 	processStatus := c.status
 	processID := c.id
+	logrus.WithFields(logF).WithField("pStatus", c.status).WithField("pId", c.id).Error("")
+
 	if r.ExecID != "" {
 		execs, err := c.getExec(r.ExecID)
 		if err != nil {
@@ -841,7 +945,8 @@ func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (_ *pt
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "CloseIO"}
+	shimLog.WithField("container", r.ID).WithFields(logF).Error("getcontainer 9 (CloseIO)")
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -967,6 +1072,8 @@ func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (_ *taskAP
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "Stats"}
+	shimLog.WithField("container", r.ID).WithFields(logF).Error("getcontainer 10 (Stats)")
 
 	c, err := s.getContainer(r.ID)
 	if err != nil {
@@ -1020,6 +1127,9 @@ func (s *service) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) (_ *
 // Wait for a process to exit
 func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (_ *taskAPI.WaitResponse, err error) {
 	shimLog.WithField("container", r.ID).Debug("Wait() start")
+
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "Wait"}
+	shimLog.WithFields(logF).WithField("container", r.ID).Error("Wait() start")
 	defer shimLog.WithField("container", r.ID).Debug("Wait() end")
 	span, _ := katatrace.Trace(s.rootCtx, shimLog, "Wait", shimTracingTags)
 	defer span.End()
@@ -1033,6 +1143,9 @@ func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (_ *taskAPI.
 	}()
 
 	s.mu.Lock()
+
+	shimLog.WithField("container", r.ID).WithFields(logF).Error("getcontainer 11 (Wait)")
+
 	c, err := s.getContainer(r.ID)
 	s.mu.Unlock()
 
@@ -1042,22 +1155,29 @@ func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (_ *taskAPI.
 
 	//wait for container
 	if r.ExecID == "" {
+		shimLog.WithField("r.ExecID", r.ExecID).WithFields(logF).Error("Wait1")
+
 		ret = <-c.exitCh
+		shimLog.WithField("ExitStatus", ret).WithFields(logF).Error("Wait2")
 
 		// refill the exitCh with the container process's exit code in case
 		// there were other waits on this process.
 		c.exitCh <- ret
 	} else { //wait for exec
+		shimLog.WithField("r.ExecID", r.ExecID).WithFields(logF).Error("Wait1")
+
 		execs, err := c.getExec(r.ExecID)
 		if err != nil {
 			return nil, err
 		}
 		ret = <-execs.exitCh
+		shimLog.WithField("ExitStatus", ret).WithFields(logF).Error("Wait2")
 
 		// refill the exitCh with the exec process's exit code in case
 		// there were other waits on this process.
 		execs.exitCh <- ret
 	}
+	shimLog.WithField("ExitStatus", ret).WithFields(logF).Error("Wait3")
 
 	return &taskAPI.WaitResponse{
 		ExitStatus: ret,
@@ -1095,6 +1215,8 @@ func (s *service) getContainer(id string) (*container, error) {
 	if c == nil {
 		return nil, errdefs.ToGRPCf(errdefs.ErrNotFound, "container does not exist %s", id)
 	}
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/service.go", "func": "getContainer"}
+	logrus.WithFields(logF).WithField("containerID", id).Error("")
 
 	return c, nil
 }

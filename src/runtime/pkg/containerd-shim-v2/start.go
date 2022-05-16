@@ -7,21 +7,27 @@ package containerdshim
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/sirupsen/logrus"
 
 	"github.com/containerd/containerd/api/types/task"
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/katautils"
+	"github.com/sirupsen/logrus"
 )
 
 func startContainer(ctx context.Context, s *service, c *container) (retErr error) {
 	shimLog.WithField("container", c.id).Debug("start container")
+	logF := logrus.Fields{"src": "uruncio", "file": "cs/start.go", "func": "startContainer"}
+	unikernelCreated := false
+	var cmd *Command
+
 	defer func() {
 		if retErr != nil {
 			// notify the wait goroutine to continue
 			c.exitCh <- exitCode255
 		}
 	}()
+
 	// start a container
 	if c.cType == "" {
 		err := fmt.Errorf("Bug, the container %s type is empty", c.id)
@@ -32,30 +38,105 @@ func startContainer(ctx context.Context, s *service, c *container) (retErr error
 		err := fmt.Errorf("Bug, the sandbox hasn't been created for this container %s", c.id)
 		return err
 	}
+	logrus.WithField("s.sandbox", "not nil").WithFields(logF).Error("")
+
+	shimLog.WithField("container", c.id).Debug("start container")
+
+	// start a container
+	// hopefully we can get the agent.ExecData field
+	execData := s.sandbox.Agent().GetExecData()
+	// logrus.WithFields(logF).Error(execData.BinaryPath)
+	logData := logrus.Fields{
+		"path":      execData.BinaryPath,
+		"btype":     execData.BinaryType,
+		"ip":        execData.IPAddress,
+		"mask":      execData.Mask,
+		"gw":        execData.Gateway,
+		"tap":       execData.Tap,
+		"ctype":     c.cType,
+		"hpid":      s.hpid,
+		"shimpid":   s.pid,
+		"unikernel": s.config.HypervisorConfig.Unikernel,
+	}
+	logrus.WithFields(logF).WithFields(logData).Error("")
+
+	// Check if config has unikernel set to true and binary exists in rootfs
+	binaryType := execData.BinaryType
+	if s.config.HypervisorConfig.Unikernel && binaryType == "" {
+		return errors.New("unikernel not found in rootfs")
+	}
 
 	if c.cType.IsSandbox() {
-		err := s.sandbox.Start(ctx)
-		if err != nil {
-			return err
-		}
-		// Start monitor after starting sandbox
-		s.monitor, err = s.sandbox.Monitor(ctx)
-		if err != nil {
-			return err
-		}
-		go watchSandbox(ctx, s)
+		logrus.WithFields(logF).WithField("cType", "sandbox").Error("")
 
-		// We use s.ctx(`ctx` derived from `s.ctx`) to check for cancellation of the
-		// shim context and the context passed to startContainer for tracing.
-		go watchOOMEvents(ctx, s)
+		if s.config.HypervisorConfig.Unikernel {
+			logrus.WithFields(logF).WithField("unikernelHypervisor", s.config.HypervisorConfig.Unikernel).Error("")
+			unikernelFile := s.sandbox.Agent().GetExecData().BinaryPath
+			logrus.WithField("unikernelFile", unikernelFile).WithFields(logF).Error("")
+			logrus.WithFields(logF).Error("starting sandbox")
+			s.sandbox.Start(ctx)
+			logrus.WithFields(logF).Error("sandbox started")
+
+			logrus.WithFields(logF).Error("starting container")
+			_, err := s.sandbox.StartContainer(ctx, c.id+"-unikernel")
+			if err != nil {
+				return err
+			}
+			shimLog.WithFields(logF).Error("container started")
+
+			shimLog.WithFields(logF).WithField("ip", s.sandbox.Agent().GetExecData().IPAddress).Error("net info")
+
+			unikernelCreated = true
+		} else {
+
+			shimLog.WithField("cType", c.cType).WithFields(logF).Error("start unikernel exec")
+
+			err := s.sandbox.Start(ctx)
+			if err != nil {
+				return err
+			}
+			// Start monitor after starting sandbox
+			s.monitor, err = s.sandbox.Monitor(ctx)
+			if err != nil {
+				return err
+			}
+			go watchSandbox(ctx, s)
+
+			// We use s.ctx(`ctx` derived from `s.ctx`) to check for cancellation of the
+			// shim context and the context passed to startContainer for tracing.
+			go watchOOMEvents(ctx, s)
+		}
 	} else {
-		_, err := s.sandbox.StartContainer(ctx, c.id)
-		if err != nil {
-			return err
+
+		if s.config.HypervisorConfig.Unikernel {
+			unikernelFile := s.sandbox.Agent().GetExecData().BinaryPath
+			shimLog.WithField("unikernelFile", unikernelFile).WithFields(logF).Error("is unikernel and is not sandbox")
+			shimLog.WithFields(logF).Error("starting container")
+
+			_, err := s.sandbox.StartContainer(ctx, c.id+"-unikernel")
+			if err != nil {
+				return err
+			}
+			shimLog.WithFields(logF).Error("container started")
+
+			shimLog.WithFields(logF).WithField("ip", s.sandbox.Agent().GetExecData().IPAddress).Error("net info")
+
+			unikernelCreated = true
+		} else {
+
+			_, err := s.sandbox.StartContainer(ctx, c.id)
+			if err != nil {
+				return err
+			}
+
 		}
 	}
 
 	// Run post-start OCI hooks.
+	shimLog.WithFields(logF).Error("post-start OCI hook")
+	netNs := s.sandbox.GetNetNs()
+	logrus.WithFields(logF).WithField("netNs", netNs).Error("")
+
 	err := katautils.EnterNetNS(s.sandbox.GetNetNs(), func() error {
 		return katautils.PostStartHooks(ctx, *c.spec, s.sandbox.ID(), c.bundle)
 	})
@@ -65,34 +146,65 @@ func startContainer(ctx context.Context, s *service, c *container) (retErr error
 		shimLog.WithError(err).Warn("Failed to run post-start hooks")
 	}
 
-	c.status = task.StatusRunning
+	if unikernelCreated {
+		shimLog.WithFields(logF).Error("ready to start unikernel")
 
-	stdin, stdout, stderr, err := s.sandbox.IOStream(c.id, c.id)
-	if err != nil {
-		return err
-	}
+		cmd = CreateCommand(s.sandbox.Agent().GetExecData(), c)
 
-	c.stdinPipe = stdin
-
-	if c.stdin != "" || c.stdout != "" || c.stderr != "" {
-		tty, err := newTtyIO(ctx, c.stdin, c.stdout, c.stderr, c.terminal)
+		//shimLog.WithField("unikPath", cmd.cmdString).WithFields(logF).Error("letsgo")
+		err := cmd.SetIO(ctx)
 		if err != nil {
 			return err
 		}
-		c.ttyio = tty
+		err = cmd.Start()
+		if err != nil {
+			return err
+		}
+		go cmd.Wait()
 
-		go ioCopy(shimLog.WithField("container", c.id), c.exitIOch, c.stdinCloser, tty, stdin, stdout, stderr)
+		// cmd run will connect the pipes or return them
+		// we will also need a goroutine to Wait for the command
+		// to run in order to notify the container's channels
+		// and terminate gracefully
+		// err = cmd.Wait()
+
+		// ananos' diff
+		// go wait(ctx, s, c, "")
+		// return nil
+
+		// } else if s.sandbox.Agent().GetExecData().BinaryType != "pause" {
+		//return nil
+
 	} else {
-		// close the io exit channel, since there is no io for this container,
-		// otherwise the following wait goroutine will hang on this channel.
-		close(c.exitIOch)
-		// close the stdin closer channel to notify that it's safe to close process's
-		// io.
-		close(c.stdinCloser)
+		c.status = task.StatusRunning
+		shimLog.WithField("c.status", c.status).WithFields(logF).Error("cs/start.go/startContainer")
+
+		stdin, stdout, stderr, err := s.sandbox.IOStream(c.id, c.id)
+		if err != nil {
+			return err
+		}
+
+		c.stdinPipe = stdin
+
+		if c.stdin != "" || c.stdout != "" || c.stderr != "" {
+			tty, err := newTtyIO(ctx, c.stdin, c.stdout, c.stderr, c.terminal)
+			if err != nil {
+				return err
+			}
+			c.ttyio = tty
+
+			go ioCopy(shimLog.WithField("container", c.id), c.exitIOch, c.stdinCloser, tty, stdin, stdout, stderr)
+		} else {
+			// close the io exit channel, since there is no io for this container,
+			// otherwise the following wait goroutine will hang on this channel.
+			close(c.exitIOch)
+			// close the stdin closer channel to notify that it's safe to close process's
+			// io.
+			close(c.stdinCloser)
+		}
 	}
 
 	go wait(ctx, s, c, "")
-
 	return nil
 }
 

@@ -54,6 +54,9 @@ func CreateSandbox(ctx context.Context, sandboxConfig SandboxConfig, factory Fac
 }
 
 func createSandboxFromConfig(ctx context.Context, sandboxConfig SandboxConfig, factory Factory) (_ *Sandbox, err error) {
+	unikernelFlag := sandboxConfig.HypervisorConfig.Unikernel
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/api.go", "func": "createSandboxFromConfig"}
+	logrus.WithFields(logF).WithField("unikernel", unikernelFlag).Error("")
 	span, ctx := katatrace.Trace(ctx, virtLog, "createSandboxFromConfig", apiTracingTags)
 	defer span.End()
 
@@ -87,17 +90,32 @@ func createSandboxFromConfig(ctx context.Context, sandboxConfig SandboxConfig, f
 		return nil, err
 	}
 
-	// Start the VM
-	if err = s.startVM(ctx); err != nil {
-		return nil, err
-	}
-
-	// rollback to stop VM if error occurs
-	defer func() {
-		if err != nil {
-			s.stopVM(ctx)
+	if !unikernelFlag {
+		// Start the VM
+		if err = s.startVM(ctx); err != nil {
+			return nil, err
 		}
-	}()
+
+		// rollback to stop VM if error occurs
+		defer func() {
+			if err != nil {
+				s.stopVM(ctx)
+			}
+		}()
+
+		s.postCreatedNetwork(ctx)
+
+		if err = s.getAndStoreGuestDetails(ctx); err != nil {
+			return nil, err
+		}
+
+		// Create Containers
+		if err = s.createContainers(ctx); err != nil {
+			return nil, err
+		}
+
+		return s, nil
+	}
 
 	s.postCreatedNetwork(ctx)
 

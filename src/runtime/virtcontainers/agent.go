@@ -33,6 +33,10 @@ func getNewAgentFunc(ctx context.Context) newAgentFuncType {
 	return newKataAgent
 }
 
+func getNewUruncAgentFunc() newAgentFuncType {
+	return NewUruncAgent
+}
+
 // WithNewAgentFunc set newAgentFuncKey in `ctx`
 func WithNewAgentFunc(ctx context.Context, f newAgentFuncType) context.Context {
 	return context.WithValue(ctx, newAgentFuncKey{}, f)
@@ -196,4 +200,9 @@ type agent interface {
 
 	// resizeGuestVolume resizes a volume specified by the volume mount path on the guest.
 	resizeGuestVolume(ctx context.Context, volumeGuestPath string, size uint64) error
+
+	GetExecData() ExecData
+
+	// for testing
+	Name() string
 }

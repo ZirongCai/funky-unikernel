@@ -290,6 +290,14 @@ func (k *kataAgent) Logger() *logrus.Entry {
 	return virtLog.WithField("subsystem", "kata_agent")
 }
 
+func (k *kataAgent) GetExecData() ExecData {
+	return ExecData{}
+}
+
+func (k *kataAgent) Name() string {
+	return "kata"
+}
+
 func (k *kataAgent) longLiveConn() bool {
 	return k.keepConn
 }
@@ -335,6 +343,8 @@ func (k *kataAgent) handleTraceSettings(config KataAgentConfig) bool {
 }
 
 func (k *kataAgent) init(ctx context.Context, sandbox *Sandbox, config KataAgentConfig) (disableVMShutdown bool, err error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/kata_agent.go", "func": "init"}
+	k.Logger().WithFields(logF).Error("kata agent init")
 	// Save
 	k.ctx = sandbox.ctx
 

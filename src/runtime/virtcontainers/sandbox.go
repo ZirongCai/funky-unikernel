@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -234,6 +235,10 @@ func (s *Sandbox) ID() string {
 	return s.id
 }
 
+func (s *Sandbox) Agent() agent {
+	return s.agent
+}
+
 // Logger returns a logrus logger appropriate for logging Sandbox messages
 func (s *Sandbox) Logger() *logrus.Entry {
 	return virtLog.WithFields(logrus.Fields{
@@ -351,7 +356,13 @@ func (s *Sandbox) Status() SandboxStatus {
 
 // Monitor returns a error channel for watcher to watch at
 func (s *Sandbox) Monitor(ctx context.Context) (chan error, error) {
+	logF := logrus.Fields{
+		"src":      "uruncio",
+		"file":     "vc/sandbox.go",
+		"function": "Monitor",
+	}
 	if s.state.State != types.StateRunning {
+		s.Logger().WithFields(logF).WithField("sandbox.state.State", s.state.State).Error("Sandbox State")
 		return nil, errSandboxNotRunning
 	}
 
@@ -366,12 +377,19 @@ func (s *Sandbox) Monitor(ctx context.Context) (chan error, error) {
 
 // WaitProcess waits on a container process and return its exit code
 func (s *Sandbox) WaitProcess(ctx context.Context, containerID, processID string) (int32, error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/sandbox.go", "func": "WaitProcess"}
+	s.Logger().WithFields(logF).Error("WaitProcess")
+
 	if s.state.State != types.StateRunning {
+		s.Logger().WithFields(logF).WithField("sandbox.state.State", s.state.State).Error("Sandbox State")
 		return 0, errSandboxNotRunning
 	}
 
 	c, err := s.findContainer(containerID)
+
 	if err != nil {
+		s.Logger().WithFields(logF).Error("Container not found")
+
 		return 0, err
 	}
 
@@ -381,7 +399,13 @@ func (s *Sandbox) WaitProcess(ctx context.Context, containerID, processID string
 // SignalProcess sends a signal to a process of a container when all is false.
 // When all is true, it sends the signal to all processes of a container.
 func (s *Sandbox) SignalProcess(ctx context.Context, containerID, processID string, signal syscall.Signal, all bool) error {
+	logF := logrus.Fields{
+		"src":      "uruncio",
+		"file":     "vc/sandbox.go",
+		"function": "SignalProcess",
+	}
 	if s.state.State != types.StateRunning {
+		s.Logger().WithFields(logF).WithField("sandbox.state.State", s.state.State).Error("Sandbox State")
 		return errSandboxNotRunning
 	}
 
@@ -395,7 +419,18 @@ func (s *Sandbox) SignalProcess(ctx context.Context, containerID, processID stri
 
 // WinsizeProcess resizes the tty window of a process
 func (s *Sandbox) WinsizeProcess(ctx context.Context, containerID, processID string, height, width uint32) error {
+	logF := logrus.Fields{
+		"src":      "uruncio",
+		"file":     "vc/sandbox.go",
+		"function": "WinsizeProcess",
+	}
 	if s.state.State != types.StateRunning {
+		s.Logger().WithFields(logF).WithField("sandbox.state.State", s.state.State).Error("Sandbox State")
+		if s.hypervisor.Unikernel() {
+			s.Logger().WithFields(logF).Error("Is unikernel")
+			return nil
+		}
+
 		return errSandboxNotRunning
 	}
 
@@ -409,7 +444,13 @@ func (s *Sandbox) WinsizeProcess(ctx context.Context, containerID, processID str
 
 // IOStream returns stdin writer, stdout reader and stderr reader of a process
 func (s *Sandbox) IOStream(containerID, processID string) (io.WriteCloser, io.Reader, io.Reader, error) {
+	logF := logrus.Fields{
+		"src":      "uruncio",
+		"file":     "vc/sandbox.go",
+		"function": "IOStream",
+	}
 	if s.state.State != types.StateRunning {
+		s.Logger().WithFields(logF).WithField("sandbox.state.State", s.state.State).Error("Sandbox State")
 		return nil, nil, nil, errSandboxNotRunning
 	}
 
@@ -472,6 +513,8 @@ func (s *Sandbox) getAndStoreGuestDetails(ctx context.Context) error {
 // to physically create that sandbox i.e. starts a VM for that sandbox to eventually
 // be started.
 func createSandbox(ctx context.Context, sandboxConfig SandboxConfig, factory Factory) (*Sandbox, error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/sandbox.go", "func": "createSandbox"}
+	logrus.WithFields(logF).Error("")
 	span, ctx := katatrace.Trace(ctx, nil, "createSandbox", sandboxTracingTags, map[string]string{"sandbox_id": sandboxConfig.ID})
 	defer span.End()
 
@@ -483,7 +526,7 @@ func createSandbox(ctx context.Context, sandboxConfig SandboxConfig, factory Fac
 	if err != nil {
 		return nil, err
 	}
-
+	logrus.WithFields(logF).Error("Sandbox created from Hypervisor")
 	if len(s.config.Experimental) != 0 {
 		s.Logger().WithField("features", s.config.Experimental).Infof("Enable experimental features")
 	}
@@ -506,11 +549,13 @@ func createSandbox(ctx context.Context, sandboxConfig SandboxConfig, factory Fac
 	if err := s.agent.createSandbox(ctx, s); err != nil {
 		return nil, err
 	}
+	logrus.WithFields(logF).Error("Sandbox created from Agent")
 
 	// Set sandbox state
 	if err := s.setSandboxState(types.StateReady); err != nil {
 		return nil, err
 	}
+	logrus.WithFields(logF).Error("Sandbox state ready")
 
 	return s, nil
 }
@@ -524,7 +569,12 @@ func newSandbox(ctx context.Context, sandboxConfig SandboxConfig, factory Factor
 	}
 
 	// create agent instance
-	agent := getNewAgentFunc(ctx)()
+	var agent agent
+	if sandboxConfig.HypervisorType == UruncHypervisor {
+		agent = getNewUruncAgentFunc()()
+	} else {
+		agent = getNewAgentFunc(ctx)()
+	}
 
 	hypervisor, err := NewHypervisor(sandboxConfig.HypervisorType)
 	if err != nil {
@@ -935,7 +985,9 @@ func (s *Sandbox) AddInterface(ctx context.Context, inf *pbTypes.Interface) (*pb
 	if err = s.Save(); err != nil {
 		return nil, err
 	}
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/sandbox.go", "func": "AddInterface"}
 
+	s.Logger().WithFields(logF).WithField("ipaddresses", netInfo.Addrs[0]).Error("ADDENDPOINT")
 	return result, nil
 }
 
@@ -1351,11 +1403,25 @@ func (s *Sandbox) CreateContainer(ctx context.Context, contConfig ContainerConfi
 
 // StartContainer starts a container in the sandbox
 func (s *Sandbox) StartContainer(ctx context.Context, containerID string) (VCContainer, error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/sandbox.go", "func": "StartContainer"}
+	unikernelFlag := false
+	if strings.Contains(containerID, "-unikernel") {
+		unikernelFlag = true
+	}
+
+	if unikernelFlag {
+		s.Logger().WithFields(logF).WithField("unikernel", "true").Error("StartContainer")
+		containerID = strings.ReplaceAll(containerID, "-unikernel", "")
+	}
 	// Fetch the container.
 	c, err := s.findContainer(containerID)
 	if err != nil {
 		return nil, err
 	}
+
+	unikernel := s.hypervisor.HypervisorConfig().Unikernel
+	s.Logger().WithFields(logF).WithField("unikernel", unikernel).Error("StartContainer")
+	s.Logger().WithFields(logF).WithField("hypervisorVMid", s.hypervisor.HypervisorConfig().VMid).Error("StartContainer")
 
 	// Start it.
 	if err = c.start(ctx); err != nil {
@@ -1366,7 +1432,7 @@ func (s *Sandbox) StartContainer(ctx context.Context, containerID string) (VCCon
 		return nil, err
 	}
 
-	s.Logger().WithField("container", containerID).Info("Container is started")
+	s.Logger().WithFields(logF).Error("Container is started")
 
 	// Update sandbox resources in case a stopped container
 	// is started
@@ -1632,10 +1698,12 @@ func (s *Sandbox) createContainers(ctx context.Context) error {
 // Start starts a sandbox. The containers that are making the sandbox
 // will be started.
 func (s *Sandbox) Start(ctx context.Context) error {
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/sandbox.go", "func": "Start"}
+	logrus.WithFields(logF).Error("Starting Unikernel Sandbox")
+
 	if err := s.state.ValidTransition(s.state.State, types.StateRunning); err != nil {
 		return err
 	}
-
 	prevState := s.state.State
 
 	if err := s.setSandboxState(types.StateRunning); err != nil {
@@ -1649,6 +1717,8 @@ func (s *Sandbox) Start(ctx context.Context) error {
 		}
 	}()
 	for _, c := range s.containers {
+		logrus.WithFields(logF).WithField("starting container", c.ID()).Error("")
+
 		if startErr = c.start(ctx); startErr != nil {
 			return startErr
 		}
@@ -1657,9 +1727,7 @@ func (s *Sandbox) Start(ctx context.Context) error {
 	if err := s.storeSandbox(ctx); err != nil {
 		return err
 	}
-
-	s.Logger().Info("Sandbox is started")
-
+	logrus.WithFields(logF).Error("Started Unikernel Sandbox")
 	return nil
 }
 

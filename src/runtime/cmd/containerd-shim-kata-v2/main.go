@@ -22,7 +22,7 @@ func shimConfig(config *shimapi.Config) {
 }
 
 func main() {
-
+	// cmdcap.CaptureCmd("/home/gntouts/kata-logs/shim/")
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
 		fmt.Printf("%s containerd shim: id: %q, version: %s, commit: %v\n", katautils.PROJECT, types.DefaultKataRuntimeName, katautils.VERSION, katautils.COMMIT)
 		os.Exit(0)
