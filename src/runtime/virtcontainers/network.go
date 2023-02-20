@@ -229,9 +229,12 @@ type Network interface {
 }
 
 func generateVCNetworkStructures(ctx context.Context, network Network) ([]*pbTypes.Interface, []*pbTypes.Route, []*pbTypes.ARPNeighbor, error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/network.go", "func": "generateVCNetworkStructures"}
 	if network.NetworkID() == "" {
+		logrus.WithFields(logF).Error("NetworkID = nil")
 		return nil, nil, nil, nil
 	}
+	logrus.WithFields(logF).WithField("networkID: ", network.NetworkID()).Error("NetworkID != nil")
 	span, _ := networkTrace(ctx, "generateVCNetworkStructures", nil)
 	defer span.End()
 
@@ -239,6 +242,7 @@ func generateVCNetworkStructures(ctx context.Context, network Network) ([]*pbTyp
 	var ifaces []*pbTypes.Interface
 	var neighs []*pbTypes.ARPNeighbor
 
+	logrus.WithFields(logF).WithField("Endpoints len ", len(network.Endpoints())).Error("")
 	for _, endpoint := range network.Endpoints() {
 		var ipAddresses []*pbTypes.IPAddress
 		for _, addr := range endpoint.Properties().Addrs {
@@ -257,7 +261,6 @@ func generateVCNetworkStructures(ctx context.Context, network Network) ([]*pbTyp
 			if addr.IP.To4() == nil {
 				ipAddress.Family = pbTypes.IPFamily_v6
 			}
-			logF := logrus.Fields{"src": "uruncio", "file": "vc/network.go", "func": "generateVCNetworkStructures"}
 			logrus.WithFields(logF).WithField("ipaddr: ", addr.IP.String()).Error("")
 			ipAddresses = append(ipAddresses, &ipAddress)
 		}
@@ -326,6 +329,7 @@ func generateVCNetworkStructures(ctx context.Context, network Network) ([]*pbTyp
 			neighs = append(neighs, &n)
 		}
 	}
+	logrus.WithFields(logF).WithField("ifaces len", len(ifaces)).WithField("neighs len", len(neighs)).Error("")
 
 	return ifaces, routes, neighs, nil
 }

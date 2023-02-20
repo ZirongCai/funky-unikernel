@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"io"
+	"io/ioutil"
 	"net"
 	osexec "os/exec"
 	"strings"
@@ -132,7 +133,7 @@ func HvtCmd(execData virtcontainers.ExecData) string {
 		nsString = ""
 	}
 	if execData.BlkDevice != "" {
-		cmdString = nsString + HvtMonitor + " --net=" + execData.Tap + " --disk=" + execData.BlkDevice + " " + execData.BinaryPath + " " + string(b)
+		cmdString = nsString + HvtMonitor + " --net=" + execData.Tap + " --disk=" + execData.BlkDevice + " " + execData.BinaryPath + " " + "test"//string(b)
 	} else {
 		cmdString = nsString + HvtMonitor + " --net=" + execData.Tap + " " + execData.BinaryPath + " " + string(b)
 	}
@@ -194,17 +195,27 @@ func QemuCmd(execData virtcontainers.ExecData) string {
 func CreateCommand(execData virtcontainers.ExecData, container *container) *Command {
 	logF := logrus.Fields{"src": "uruncio", "file": "cs/urunc.go", "func": "CreateCommand"}
 	cmdString := CmdLine(execData)
+	files, _ := ioutil.ReadDir("/run/containerd/io.containerd.runtime.v2.task/default/"+ container.id +"/rootfs")
+	for _, file := range files {
+		if !file.IsDir(){
+			cmdString = cmdString+" "+file.Name()
+		}
+	}
 	shimLog.WithField("BinaryType", execData.BinaryType).WithFields(logF).Error("exec info")
 	shimLog.WithField("cmdString", cmdString).WithFields(logF).Error("exec info")
 
 	args := strings.Split(cmdString, " ")
 	var newCmd *osexec.Cmd
 	if len(args) == 1 {
-		shimLog.WithField("cmdString", args[0]).WithFields(logF).Error("exec info")
+		shimLog.WithField("Stringlen", len(args)).WithField("cmdString", args[0]).WithFields(logF).Error("exec info")
 		newCmd = osexec.Command(args[0])
 	} else {
 		name, args := args[0], args[1:]
 		newCmd = osexec.Command(name, args...)
+		newCmd.Env = append(newCmd.Environ(), "XILINX_XRT=/opt/xilinx/xrt")
+		newCmd.Env = append(newCmd.Environ(), "PATH=/opt/xilinx/xrt/bin:/opt/xilinx/xrt/bin:/opt/xilinx/xrt/bin:/opt/xilinx/xrt/bin:/opt/xilinx/xrt/bin:/opt/xilinx/xrt/bin:/opt/xilinx/xrt/bin:/home/zirong/.local/bin:/home/zirong/.pyenv/plugins/pyenv-virtualenv/shims:/home/zirong/.pyenv/shims:/home/zirong/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/home/zirong/.local/bin:/home/zirong/.pyenv/plugins/pyenv-virtualenv/shims:/home/zirong/.pyenv/bin:/home/zirong/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/zirong/funkyos//bin:/home/zirong/funkyos//bin:/usr/local/go/bin:/home/zirong/go/bin")
+		newCmd.Env = append(newCmd.Environ(), "LD_LIBRARY_PATH=/opt/xilinx/xrt/lib:/opt/xilinx/xrt/lib:/opt/xilinx/xrt/lib:/opt/xilinx/xrt/lib:/opt/xilinx/xrt/lib:/opt/xilinx/xrt/lib:/opt/xilinx/xrt/lib:")
+		newCmd.Env = append(newCmd.Environ(), "PYTHONPATH=/opt/xilinx/xrt/python:/opt/xilinx/xrt/python:/opt/xilinx/xrt/python:/opt/xilinx/xrt/python:/opt/xilinx/xrt/python:/opt/xilinx/xrt/python:/opt/xilinx/xrt/python:")
 	}
 	return &Command{cmdString: cmdString, container: container, id: container.id, stdin: container.stdin, stdout: container.stdout, stderr: container.stderr, bundle: container.bundle, exec: newCmd}
 }
@@ -265,14 +276,17 @@ func (c *Command) Start() error {
 }
 
 func (c *Command) Wait() error {
-	time.Sleep(500 * time.Millisecond)
 	logF := logrus.Fields{"src": "uruncio", "file": "cs/urunc.go", "func": "Wait"}
+
+	shimLog.WithFields(logF).Error("Wait Start")
+	time.Sleep(500 * time.Millisecond)
 
 	c.exec.Wait()
 	shimLog.WithFields(logF).Error("exec returned")
 
 	shimLog.WithFields(logF).Error("cmd completed")
 
+	shimLog.WithFields(logF).Error("exitIOch close start")
 	close(c.container.exitIOch)
 	shimLog.WithFields(logF).Error("exitIOch closed")
 

@@ -376,7 +376,7 @@ func (u *uruncAgent) stopContainer(ctx context.Context, sandbox *Sandbox, c Cont
 
 	if rootfsSourcePath != "" {
 
-		umnt1Out, err := osexec.Command("umount", "/run/kata-containers/shared/containers/"+c.id+"/rootfs").Output()
+		umnt1Out, err := osexec.Command("umount", "-f", "/run/kata-containers/shared/sandboxes/"+c.id+"/shared").Output()
 		if err != nil {
 			u.Logger().WithFields(logF).WithField("errmsg", err.Error()).Error("unmount 1 error")
 		} else {
@@ -384,12 +384,12 @@ func (u *uruncAgent) stopContainer(ctx context.Context, sandbox *Sandbox, c Cont
 		}
 
 		//  This unmount is also handled earlier by kata, but I left it just in case.
-		umnt2Out, err := osexec.Command("umount", rootFsPath).Output()
-		if err != nil {
-			u.Logger().WithFields(logF).WithField("errmsg", err.Error()).Error("unmount 2 error")
-		} else {
-			u.Logger().WithFields(logF).WithField("out", string(umnt2Out)).Error("unmount 2 OK")
-		}
+		//umnt2Out, err := osexec.Command("umount", "-f", rootFsPath).Output()
+		//if err != nil {
+		//	u.Logger().WithFields(logF).WithField("errmsg", err.Error()).Error("unmount 2 error")
+		//} else {
+		//	u.Logger().WithFields(logF).WithField("out", string(umnt2Out)).Error("unmount 2 OK")
+		//}
 
 		// remove garbage dirs
 		rmOut, err := osexec.Command("rm", "-rf", "/run/kata-containers/shared/containers/"+c.id).Output()
@@ -397,6 +397,13 @@ func (u *uruncAgent) stopContainer(ctx context.Context, sandbox *Sandbox, c Cont
 			u.Logger().WithFields(logF).WithField("errmsg", err.Error()).Error("rm container error")
 		} else {
 			u.Logger().WithFields(logF).WithField("out", string(rmOut)).Error("rm container OK")
+		}
+
+		rmOut, err = osexec.Command("rm", "-rf", "/run/containerd/io.containerd.runtime.v2.task/default/"+c.id).Output()
+		if err != nil {
+			u.Logger().WithFields(logF).WithField("errmsg", err.Error()).Error("rm sandbox error")
+		} else {
+			u.Logger().WithFields(logF).WithField("out", string(rmOut)).Error("rm sandbox OK")
 		}
 
 		rmOut, err = osexec.Command("rm", "-rf", "/run/kata-containers/shared/sandboxes/"+c.id).Output()

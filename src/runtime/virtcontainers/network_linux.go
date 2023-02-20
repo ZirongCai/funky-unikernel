@@ -25,6 +25,7 @@ import (
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/katautils/katatrace"
 	persistapi "github.com/kata-containers/kata-containers/src/runtime/virtcontainers/persist/api"
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/utils"
+	"github.com/sirupsen/logrus"
 )
 
 // Introduces constants related to networking
@@ -47,20 +48,25 @@ type LinuxNetwork struct {
 // for unit testing. Passing more than one NetworkConfig pointer
 // will make the constructor fail.
 func NewNetwork(configs ...*NetworkConfig) (Network, error) {
+	logF := logrus.Fields{"src": "uruncio", "file": "vc/network_linux.go", "func": "NewNetwork"}
 	if len(configs) > 1 {
+		logrus.WithFields(logF).Error("Too many networkd configurations")
 		return nil, fmt.Errorf("Too many network configurations")
 	}
 
 	// Empty constructor
 	if len(configs) == 0 {
+		logrus.WithFields(logF).Error("empty constructor")
 		return &LinuxNetwork{}, nil
 	}
 
 	config := configs[0]
 	if config == nil {
+		logrus.WithFields(logF).Error("Missing networkd configuration")
 		return nil, fmt.Errorf("Missing network configuration")
 	}
 
+	logrus.WithFields(logF).WithField("NetworkID: ", config.NetworkID).Error("")
 	return &LinuxNetwork{
 		config.NetworkID,
 		[]Endpoint{},
