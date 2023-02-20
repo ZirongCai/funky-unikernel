@@ -590,4 +590,4 @@ sudo umount /run/kata-containers/shared/sandboxes/FunkyosTest/shared
 
 3. `ctr: failed to create shim: no such file or directory: not found`
 
-	No idea why, but run the command again resolved this error.
+	run the command again resolved this error.
