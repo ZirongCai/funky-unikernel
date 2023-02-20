@@ -561,7 +561,7 @@ move the bitstream file (e.g: `krnl_vadd.xclbin`) into `data` directory so that 
 # Run
 
 ```
-sudo ctr run --snapshotter devmapper --runtime io.containerd.kata-urunc.v2 -t --rm docker.io/urunc/funky:hvt FunkyosTest  /unikernel/simple_add.hvt 
+sudo ctr run --snapshotter devmapper --runtime io.containerd.kata-urunc.v2 --rm docker.io/urunc/funky:hvt FunkyosTest  /unikernel/simple_add.hvt 
 ```
 
 
