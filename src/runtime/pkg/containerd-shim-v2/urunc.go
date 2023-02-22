@@ -10,7 +10,6 @@ import (
 	osexec "os/exec"
 	"strings"
 	"time"
-
 	"github.com/containerd/containerd/api/types/task"
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers"
 	"github.com/sirupsen/logrus"
@@ -90,7 +89,7 @@ func HvtCmd(execData virtcontainers.ExecData) string {
 	logrus.WithFields(logF).Error("")
 	ifaces, _ := net.Interfaces()
 	execData.Tap = ifaces[len(ifaces)-1].Name
-	execData.Tap = "tap0_kata"
+	execData.Tap = "tap100"
 	nsParts := strings.Split(execData.NetNs, "/")
 	ns := nsParts[len(nsParts)-1]
 	logrus.WithFields(logF).WithField("NetNs1", execData.NetNs).Error("")
@@ -198,7 +197,11 @@ func CreateCommand(execData virtcontainers.ExecData, container *container) *Comm
 	files, _ := ioutil.ReadDir("/run/containerd/io.containerd.runtime.v2.task/default/"+ container.id +"/rootfs")
 	for _, file := range files {
 		if !file.IsDir(){
-			cmdString = cmdString+" "+file.Name()
+			if strings.HasSuffix(file.Name(),".xclbin"){
+			    cmdString = cmdString+" "+file.Name()
+			 } else {
+			    continue
+		    }
 		}
 	}
 	shimLog.WithField("BinaryType", execData.BinaryType).WithFields(logF).Error("exec info")
